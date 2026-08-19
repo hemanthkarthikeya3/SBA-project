@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { TopNavbar } from './components/TopNavbar';
 import { Sidebar, NavView } from './components/Sidebar';
 import { ClientHeader } from './components/ClientHeader';
@@ -30,7 +30,7 @@ import {
   CASH_FLOW_DATA_GVO,
   BANK_PRODUCTS,
 } from './data/mockClients';
-import { ClientProfile, ChatMessage, Citation, AdvisoryRecommendation } from './types';
+import { ClientProfile, ChatMessage, Citation, AdvisoryRecommendation, RiskAlert, CashFlowPoint } from './types';
 import { Users, BrainCircuit, Package, BarChart3, X } from 'lucide-react';
 
 export default function App() {
@@ -39,6 +39,10 @@ export default function App() {
   const [currentView, setCurrentView] = useState<NavView>('clients');
   const [searchQuery, setSearchQuery] = useState('');
   const [isStressApplied, setIsStressApplied] = useState(false);
+
+  // Dynamic stores for generated alerts & recs
+  const [dynamicAlerts, setDynamicAlerts] = useState<Record<string, RiskAlert[]>>(CLIENT_RISK_ALERTS);
+  const [dynamicRecs, setDynamicRecs] = useState<Record<string, AdvisoryRecommendation[]>>(CLIENT_ADVISORY_RECOMMENDATIONS);
 
   // Modals state
   const [activeModal, setActiveModal] = useState<
@@ -55,44 +59,61 @@ export default function App() {
   >(null);
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
 
-  // Copilot messages state in Rupees (₹)
+  // Initial Copilot Chat message
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'msg-1',
       sender: 'copilot',
-      timestamp: '10:42 AM',
-      text: "I've analyzed Green Valley Organics' recent transaction history in Indian Rupees (₹). Would you like a summary of the Q2 supply chain costs, or should we examine the delayed receivables (₹10.25 Lakhs) mentioned in the risk panel?",
-    },
-    {
-      id: 'msg-2',
-      sender: 'rm',
-      timestamp: '10:45 AM',
-      text: 'Summarize the Q2 supply chain costs compared to last year. Are there specific vendors driving the increase?',
-    },
-    {
-      id: 'msg-3',
-      sender: 'copilot',
-      timestamp: '10:46 AM',
-      text: 'Q2 supply chain costs increased by **8.4% YoY**.\n\nThe primary driver is a 12% increase in cold-chain logistics from *EcoTransit Solutions* (₹4,86,000 vs ₹4,34,000 prior year). Packaging costs from other vendors remained stable.',
-      citations: [
-        {
-          id: 'cite-ecotransit-main',
-          title: 'Open EcoTransit Cold-Chain Ledger.pdf',
-          type: 'ledger',
-          snippet:
-            'EcoTransit Solutions Q2 Freight spend: ₹4,86,000 (+12.0% YoY vs ₹4,34,000). Expedited refrigerated transport routes to regional grocery fulfillment hubs with diesel fuel surcharges.',
-        },
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      text: `Hello Marcus, I have loaded the commercial profile for **${selectedClient.name}** in Indian Rupees (₹).\n\nKey highlights: Quick Ratio is **${selectedClient.financialKPIs.quickRatio}x**, operating runway is **${selectedClient.financialKPIs.runwayMonths} months**, and total AR outstanding is **₹${selectedClient.arAging.totalOutstanding.toLocaleString('en-IN')}**.\n\nHow would you like to assist the client today?`,
+      suggestedFollowUps: [
+        'Analyze overdue AR aging schedule',
+        'Check working capital CC/OD eligibility',
+        'Simulate Q3 seasonal revenue dip',
       ],
     },
   ]);
   const [isCopilotLoading, setIsCopilotLoading] = useState(false);
 
-  // Filter alerts & recommendations for current client
-  const currentAlerts = CLIENT_RISK_ALERTS[selectedClient.id] || CLIENT_RISK_ALERTS['client-gvo'];
-  const currentRecommendations =
-    CLIENT_ADVISORY_RECOMMENDATIONS[selectedClient.id] || CLIENT_ADVISORY_RECOMMENDATIONS['client-gvo'];
+  // Filter clients dynamically based on top search bar
+  const filteredClients = useMemo(() => {
+    if (!searchQuery.trim()) return clients;
+    const q = searchQuery.toLowerCase();
+    return clients.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.industry.toLowerCase().includes(q) ||
+        c.tags.some((t) => t.toLowerCase().includes(q))
+    );
+  }, [clients, searchQuery]);
 
-  // Handle Copilot Chat submission
+  // Current client specific alerts & recommendations
+  const currentAlerts = dynamicAlerts[selectedClient.id] || CLIENT_RISK_ALERTS['client-gvo'];
+  const currentRecommendations = dynamicRecs[selectedClient.id] || CLIENT_ADVISORY_RECOMMENDATIONS['client-gvo'];
+
+  // Current client specific cashflow trajectory
+  const currentCashFlow = selectedClient.cashFlowTrajectory || CASH_FLOW_DATA_GVO;
+
+  // Handle client selection switch
+  const handleSelectClient = (c: ClientProfile) => {
+    setSelectedClient(c);
+    setIsStressApplied(false);
+    setMessages([
+      {
+        id: `msg-${Date.now()}`,
+        sender: 'copilot',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        text: `Switched context to **${c.name}** (${c.industry}). Balance sheet Quick Ratio stands at **${c.financialKPIs.quickRatio}x** with **₹${c.arAging.totalOutstanding.toLocaleString('en-IN')}** in total outstanding receivables.`,
+        suggestedFollowUps: [
+          `Inspect ${c.name} vendor cost drivers`,
+          'Check credit facility pre-qualifications',
+          'Draft executive financial health memo',
+        ],
+      },
+    ]);
+  };
+
+  // Handle Copilot Chat submission with real AI call
   const handleSendMessage = async (text: string) => {
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
@@ -119,21 +140,20 @@ export default function App() {
         id: `msg-${Date.now() + 1}`,
         sender: 'copilot',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        text: data.text || 'I have completed the requested financial analysis.',
+        text: data.text || 'I have completed the requested financial diagnostic.',
         citations: data.citations || [],
-        suggestedFollowUps: data.suggestedFollowUps,
+        suggestedFollowUps: data.suggestedFollowUps || [],
       };
       setMessages((prev) => [...prev, copilotMsg]);
     } catch (err) {
       console.error(err);
-      // Fallback
       setMessages((prev) => [
         ...prev,
         {
           id: `msg-${Date.now() + 1}`,
           sender: 'copilot',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          text: `Analysis complete for ${selectedClient.name}: Quick Ratio is ${selectedClient.financialKPIs.quickRatio} and current runway is ${selectedClient.financialKPIs.runwayMonths} months. No covenant violations detected.`,
+          text: `Financial analysis for ${selectedClient.name}: Quick Ratio is ${selectedClient.financialKPIs.quickRatio}x with ₹${selectedClient.arAging.totalOutstanding.toLocaleString('en-IN')} total AR outstanding.`,
         },
       ]);
     } finally {
@@ -141,32 +161,34 @@ export default function App() {
     }
   };
 
-  const handleDraftClientEmail = (_rec: AdvisoryRecommendation) => {
-    setActiveModal('export_report');
-  };
-
-  const handleAskCopilotAboutRec = (rec: AdvisoryRecommendation) => {
-    handleSendMessage(`Explain the credit policy and suitability matching for ${rec.title}.`);
-  };
-
-  const handleApplyStress = (_params: { revDrop: number; cogsSurge: number; arDelay: number }) => {
-    setIsStressApplied(true);
+  const handleClientCreated = (
+    newClient: ClientProfile,
+    alerts?: RiskAlert[],
+    recs?: AdvisoryRecommendation[]
+  ) => {
+    setClients((prev) => [newClient, ...prev]);
+    if (alerts) {
+      setDynamicAlerts((prev) => ({ ...prev, [newClient.id]: alerts }));
+    }
+    if (recs) {
+      setDynamicRecs((prev) => ({ ...prev, [newClient.id]: recs }));
+    }
+    handleSelectClient(newClient);
+    setCurrentView('clients');
   };
 
   return (
     <div className="min-h-screen bg-[#f7fafc] text-[#181c1e] font-sans antialiased">
-      {/* Top Navigation Bar */}
       <TopNavbar
-        clients={clients}
+        clients={filteredClients}
         selectedClient={selectedClient}
-        onSelectClient={(c) => setSelectedClient(c)}
+        onSelectClient={handleSelectClient}
         onOpenHelp={() => setActiveModal('help')}
         onOpenNotifications={() => setActiveModal('notifications')}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
       />
 
-      {/* Side Navigation Bar */}
       <Sidebar
         currentView={currentView}
         onSelectView={(v) => setCurrentView(v)}
@@ -175,17 +197,13 @@ export default function App() {
         onOpenSupport={() => setActiveModal('help')}
       />
 
-      {/* Main Content Layout */}
       <main
         id="main-canvas"
         className="md:ml-[280px] pt-16 md:pt-20 p-4 md:p-8 max-w-[1500px] mx-auto min-h-screen flex flex-col lg:flex-row gap-6 pb-24 md:pb-8"
       >
-        {/* View Routing */}
         {currentView === 'clients' && (
           <>
-            {/* Dashboard Content (Left Side) */}
             <div className="flex-1 flex flex-col gap-6">
-              {/* Header Section */}
               <ClientHeader
                 client={selectedClient}
                 onBackToClients={() => setCurrentView('insights')}
@@ -193,35 +211,34 @@ export default function App() {
                 onScheduleReview={() => setActiveModal('schedule_review')}
               />
 
-              {/* Key Financial Ratios Bento Row in Rupees (₹) */}
               <FinancialMetricsBento
                 kpis={selectedClient.financialKPIs}
-                onInspectMetric={(metric) => handleSendMessage(`Break down the historical trend for ${metric}.`)}
+                onInspectMetric={(metric) =>
+                  handleSendMessage(`Explain the historical trend, margin safety, and benchmark for ${metric}.`)
+                }
               />
 
-              {/* Cash Flow Visualizer Section */}
               <CashFlowVisualizer
-                data={CASH_FLOW_DATA_GVO}
+                data={currentCashFlow}
                 isStressApplied={isStressApplied}
                 onToggleStress={() => setIsStressApplied(!isStressApplied)}
                 onOpenStressModal={() => setActiveModal('stress_test')}
               />
 
-              {/* Proactive Risk & Stress Detection Panel */}
               <RiskStressPanel
                 alerts={currentAlerts}
                 onOpenModal={(modalType) => setActiveModal(modalType)}
               />
 
-              {/* Responsible Advisory Next-Best-Actions */}
               <AdvisoryNextBestAction
                 recommendations={currentRecommendations}
-                onDraftClientEmail={handleDraftClientEmail}
-                onAskCopilotAboutRec={handleAskCopilotAboutRec}
+                onDraftClientEmail={() => setActiveModal('export_report')}
+                onAskCopilotAboutRec={(rec) =>
+                  handleSendMessage(`Explain the credit policy suitability and client pitch for ${rec.title}.`)
+                }
               />
             </div>
 
-            {/* AI Advisory Copilot (Right Sticky Sidebar) */}
             <AdvisoryCopilot
               client={selectedClient}
               messages={messages}
@@ -235,9 +252,9 @@ export default function App() {
         {currentView === 'insights' && (
           <div className="flex-1">
             <PortfolioInsightsView
-              clients={clients}
+              clients={filteredClients}
               onSelectClient={(c) => {
-                setSelectedClient(c);
+                handleSelectClient(c);
                 setCurrentView('clients');
               }}
             />
@@ -250,7 +267,7 @@ export default function App() {
               products={BANK_PRODUCTS}
               onOpenProductInCopilot={(p) => {
                 setCurrentView('clients');
-                handleSendMessage(`Check if ${selectedClient.name} is eligible for ${p.name}.`);
+                handleSendMessage(`Check if ${selectedClient.name} is eligible for the ${p.name}.`);
               }}
             />
           </div>
@@ -259,55 +276,15 @@ export default function App() {
         {currentView === 'reports' && (
           <div className="flex-1">
             <ReportsView
-              clients={clients}
+              clients={filteredClients}
               onOpenReportModal={(c) => {
-                setSelectedClient(c);
+                handleSelectClient(c);
                 setActiveModal('export_report');
               }}
             />
           </div>
         )}
       </main>
-
-      {/* Mobile Bottom Navigation Bar */}
-      <nav className="fixed bottom-0 left-0 w-full bg-white border-t border-[#c4c6cf]/60 flex justify-around items-center h-16 z-50 md:hidden pb-safe shadow-lg">
-        <button
-          onClick={() => setCurrentView('clients')}
-          className={`flex flex-col items-center justify-center w-full h-full text-xs font-medium ${
-            currentView === 'clients' ? 'text-[#1960a3] bg-[#7db6ff]/10 font-bold' : 'text-[#74777f]'
-          }`}
-        >
-          <Users className="w-5 h-5 mb-1" />
-          <span>Clients</span>
-        </button>
-        <button
-          onClick={() => setCurrentView('insights')}
-          className={`flex flex-col items-center justify-center w-full h-full text-xs font-medium ${
-            currentView === 'insights' ? 'text-[#1960a3] bg-[#7db6ff]/10 font-bold' : 'text-[#74777f]'
-          }`}
-        >
-          <BrainCircuit className="w-5 h-5 mb-1" />
-          <span>Insights</span>
-        </button>
-        <button
-          onClick={() => setCurrentView('products')}
-          className={`flex flex-col items-center justify-center w-full h-full text-xs font-medium ${
-            currentView === 'products' ? 'text-[#1960a3] bg-[#7db6ff]/10 font-bold' : 'text-[#74777f]'
-          }`}
-        >
-          <Package className="w-5 h-5 mb-1" />
-          <span>Products</span>
-        </button>
-        <button
-          onClick={() => setCurrentView('reports')}
-          className={`flex flex-col items-center justify-center w-full h-full text-xs font-medium ${
-            currentView === 'reports' ? 'text-[#1960a3] bg-[#7db6ff]/10 font-bold' : 'text-[#74777f]'
-          }`}
-        >
-          <BarChart3 className="w-5 h-5 mb-1" />
-          <span>Reports</span>
-        </button>
-      </nav>
 
       {/* Modals */}
       <ARAgingModal
@@ -316,7 +293,7 @@ export default function App() {
         onClose={() => setActiveModal(null)}
         onSelectSolution={() => {
           setActiveModal(null);
-          handleSendMessage('How quickly can we deploy the Whole Foods AR acceleration line in INR?');
+          handleSendMessage(`How quickly can we deploy TReDS invoice discounting for ${selectedClient.name}?`);
         }}
       />
 
@@ -324,7 +301,7 @@ export default function App() {
         client={selectedClient}
         isOpen={activeModal === 'stress_test'}
         onClose={() => setActiveModal(null)}
-        onApplyStress={handleApplyStress}
+        onApplyStress={() => setIsStressApplied(true)}
       />
 
       <VendorLedgerModal
@@ -348,11 +325,7 @@ export default function App() {
       <NewAnalysisModal
         isOpen={activeModal === 'new_analysis'}
         onClose={() => setActiveModal(null)}
-        onClientCreated={(newClient) => {
-          setClients((prev) => [newClient, ...prev]);
-          setSelectedClient(newClient);
-          setCurrentView('clients');
-        }}
+        onClientCreated={handleClientCreated}
       />
 
       <CitationViewerModal
@@ -360,72 +333,6 @@ export default function App() {
         isOpen={Boolean(selectedCitation)}
         onClose={() => setSelectedCitation(null)}
       />
-
-      {/* Help / Methodology Modal */}
-      {activeModal === 'help' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-          <div className="bg-white rounded-lg max-w-lg w-full p-6 border border-[#c4c6cf] shadow-xl text-xs space-y-4">
-            <div className="flex justify-between items-center border-b border-gray-200 pb-3">
-              <h3 className="text-base font-bold text-[#002045]">
-                About Advisory AI & Small Business Methodology (₹ INR)
-              </h3>
-              <button onClick={() => setActiveModal(null)} className="text-gray-400 hover:text-gray-700">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-gray-600 leading-relaxed">
-              <strong>Advisory AI</strong> equips Commercial & MSME Relationship Managers with proactive, explainable, and responsible decision support in Indian Rupees (₹). Rather than pushing hard-coded credit sales, it identifies cash flow anomalies, vendor cost surges, and seasonal troughs early.
-            </p>
-            <div className="bg-emerald-50 border border-emerald-200 p-3 rounded text-emerald-900 font-mono">
-              <div className="font-bold mb-1">Core Banking Guardrails:</div>
-              • DSCR &gt; 1.25x minimum compliance check<br />
-              • Non-predatory fee transparency<br />
-              • Grounded ledger and policy citation verification
-            </div>
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-1.5 bg-[#002045] text-white rounded font-bold hover:bg-[#1a365d]"
-              >
-                Close Guide
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Notifications Drawer */}
-      {activeModal === 'notifications' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-          <div className="bg-white rounded-lg max-w-md w-full p-6 border border-[#c4c6cf] shadow-xl text-xs space-y-4">
-            <div className="flex justify-between items-center border-b border-gray-200 pb-3">
-              <h3 className="text-base font-bold text-[#002045]">Active Risk & Advisory Alerts</h3>
-              <button onClick={() => setActiveModal(null)} className="text-gray-400 hover:text-gray-700">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="space-y-2">
-              <div className="p-3 bg-red-50 border border-red-200 rounded text-red-900">
-                <strong>Whole Foods AR Aging Lag:</strong> 2 invoices totaling ₹10.25 Lakhs are past 30 days overdue.
-              </div>
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-900">
-                <strong>Q3 Seasonal Dip Approaching:</strong> Expected -20% harvest revenue changeover in August.
-              </div>
-              <div className="p-3 bg-blue-50 border border-blue-200 rounded text-blue-900">
-                <strong>EcoTransit Cold-Chain Surge:</strong> Logistics costs rose +12.0% YoY (₹4.86 Lakhs total spend).
-              </div>
-            </div>
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => setActiveModal(null)}
-                className="px-4 py-1.5 bg-[#002045] text-white rounded font-bold"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
