@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Send, Sparkles, FileText, ExternalLink, Loader2, Bot, User, CornerDownLeft } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, FileText, ExternalLink, Loader2, Bot, User } from 'lucide-react';
 import { ChatMessage, Citation, ClientProfile } from '../types';
 
 interface AdvisoryCopilotProps {
@@ -35,11 +35,13 @@ export const AdvisoryCopilot: React.FC<AdvisoryCopilotProps> = ({
     setInputText('');
   };
 
-  const quickActionChips = [
-    'Check loan eligibility',
-    'Summarize Q2 supply chain costs',
-    'Analyze Whole Foods AR aging',
-    'Draft meeting preparation brief',
+  // Extract latest dynamic follow-up chips from the last copilot message, or fallback to sensible defaults
+  const latestCopilotMsg = [...messages].reverse().find((m) => m.sender === 'copilot');
+  const dynamicFollowUps = latestCopilotMsg?.suggestedFollowUps || [
+    `Assess ${client.name} credit policy fit`,
+    'Analyze overdue AR aging schedule',
+    'Simulate Q3 revenue stress test',
+    'Draft consultative review agenda',
   ];
 
   return (
@@ -50,14 +52,17 @@ export const AdvisoryCopilot: React.FC<AdvisoryCopilotProps> = ({
       {/* Header */}
       <div className="p-3.5 border-b border-[#c4c6cf]/60 flex items-center justify-between bg-[#f1f4f6] rounded-t">
         <div className="flex items-center gap-2">
-          <MessageSquare className="w-4 h-4 text-[#1960a3]" />
-          <h3 className="font-bold text-sm text-[#002045]">
-            Advisory Copilot
-          </h3>
+          <div className="w-6 h-6 rounded bg-[#1960a3] text-white flex items-center justify-center">
+            <Sparkles className="w-3.5 h-3.5" />
+          </div>
+          <div>
+            <h3 className="font-bold text-sm text-[#002045]">Advisory Copilot</h3>
+            <span className="text-[10px] text-gray-500 font-mono">Grounded on {client.name}</span>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-[#74777f]">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="text-[11px] font-mono text-emerald-800 font-medium">Ready</span>
+          <span className="text-[11px] font-mono text-emerald-800 font-medium">Gemini 2.5 Active</span>
         </div>
       </div>
 
@@ -83,9 +88,8 @@ export const AdvisoryCopilot: React.FC<AdvisoryCopilotProps> = ({
                   </>
                 )}
               </div>
-
               <div
-                className={`p-3.5 rounded-xl max-w-[92%] leading-relaxed ${
+                className={`p-3.5 rounded-xl max-w-[94%] leading-relaxed ${
                   isCopilot
                     ? 'bg-[#f1f4f6] text-[#181c1e] rounded-tl-none border border-[#c4c6cf]/30'
                     : 'bg-[#002045] text-white rounded-tr-none shadow-2xs'
@@ -122,29 +126,27 @@ export const AdvisoryCopilot: React.FC<AdvisoryCopilotProps> = ({
             </div>
           );
         })}
-
         {isLoading && (
           <div className="flex items-center gap-2 text-xs text-[#1960a3] bg-[#7db6ff]/10 p-3 rounded-lg w-fit border border-[#7db6ff]/30 animate-pulse">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Analyzing ledger transactions and credit policies...</span>
+            <span>Auditing ledger records & underwriting policies...</span>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggested Action Chips */}
+      {/* Suggested Follow-Up Prompt Chips */}
       <div className="px-3 pt-2 pb-1 border-t border-[#c4c6cf]/30 bg-[#f7fafc]">
         <div className="text-[10px] font-mono text-[#74777f] uppercase mb-1">
-          Quick Prompts:
+          AI Suggested Next Queries:
         </div>
         <div className="flex gap-1.5 overflow-x-auto pb-1.5 scrollbar-none">
-          {quickActionChips.map((chip, idx) => (
+          {dynamicFollowUps.map((chip, idx) => (
             <button
               key={idx}
               onClick={() => onSendMessage(chip)}
               disabled={isLoading}
-              className="whitespace-nowrap px-2.5 py-1 bg-white border border-[#c4c6cf]/80 rounded text-[11px] text-[#43474e] hover:text-[#002045] hover:border-[#1960a3] hover:bg-[#ebeef0] transition-colors shrink-0 disabled:opacity-50"
+              className="whitespace-nowrap px-2.5 py-1 bg-white border border-[#c4c6cf]/80 rounded text-[11px] text-[#43474e] hover:text-[#002045] hover:border-[#1960a3] hover:bg-[#ebeef0] transition-colors shrink-0 disabled:opacity-50 cursor-pointer"
             >
               {chip}
             </button>
@@ -159,14 +161,14 @@ export const AdvisoryCopilot: React.FC<AdvisoryCopilotProps> = ({
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder="Ask about policies, history, covenants..."
+            placeholder={`Ask about ${client.name}'s cash flow or policy limits...`}
             disabled={isLoading}
             className="w-full pl-3 pr-10 py-2 border border-[#c4c6cf] rounded focus:ring-2 focus:ring-[#1960a3] focus:border-[#1960a3] outline-none text-xs md:text-sm bg-white text-[#181c1e] placeholder-[#74777f]"
           />
           <button
             type="submit"
             disabled={!inputText.trim() || isLoading}
-            className="absolute right-1.5 p-1.5 text-[#1960a3] hover:text-[#002045] disabled:opacity-40 transition-colors"
+            className="absolute right-1.5 p-1.5 text-[#1960a3] hover:text-[#002045] disabled:opacity-40 transition-colors cursor-pointer"
           >
             <Send className="w-4 h-4" />
           </button>
