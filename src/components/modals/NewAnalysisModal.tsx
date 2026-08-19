@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
-import { X, Sparkles, FileSpreadsheet } from 'lucide-react';
-import { ClientProfile } from '../../types';
+import { X, Sparkles, FileSpreadsheet, Loader2, AlertCircle } from 'lucide-react';
+import { ClientProfile, RiskAlert, AdvisoryRecommendation, CashFlowPoint } from '../../types';
 
 interface NewAnalysisModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onClientCreated: (client: ClientProfile) => void;
+  onClientCreated: (
+    client: ClientProfile,
+    alerts?: RiskAlert[],
+    recs?: AdvisoryRecommendation[],
+    cashFlow?: CashFlowPoint[]
+  ) => void;
 }
 
 export const NewAnalysisModal: React.FC<NewAnalysisModalProps> = ({
@@ -20,101 +25,85 @@ export const NewAnalysisModal: React.FC<NewAnalysisModalProps> = ({
   const [annualRevenue, setAnnualRevenue] = useState('₹1,95,00,000 (₹1.95 Cr)');
   const [quickRatio, setQuickRatio] = useState('1.25');
   const [burnRate, setBurnRate] = useState('32');
+  const [notes, setNotes] = useState('Wholesale grocery expansion causing 45-day payment cycles with major buyers.');
   const [analyzing, setAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleRunAnalysis = (e: React.FormEvent) => {
+  const handleRunAnalysis = async (e: React.FormEvent) => {
     e.preventDefault();
     setAnalyzing(true);
+    setError(null);
 
-    setTimeout(() => {
+    try {
+      const response = await fetch('/api/advisory/analyze-new-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyName,
+          industry,
+          annualRevenue,
+          quickRatio,
+          burnRate,
+          notes,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('AI analysis failed. Please try again.');
+      }
+
+      const data = await response.json();
+
       const newClient: ClientProfile = {
         id: `client-${Date.now()}`,
         name: companyName,
         industry: industry,
-        clientSince: 2023,
-        riskTier: 'Moderate',
+        clientSince: new Date().getFullYear(),
+        riskTier: data.riskTier || 'Moderate',
         annualRevenue: annualRevenue,
-        employees: 14,
-        contactPerson: {
-          name: 'Lucas Thorne',
+        employees: data.employees || 15,
+        contactPerson: data.contactPerson || {
+          name: 'Executive Contact',
           title: 'Founder & CEO',
-          email: 'lucas@cascaderoast.in',
+          email: `contact@${companyName.toLowerCase().replace(/[^a-z0-9]/g, '')}.in`,
           phone: '+91 98450 12890',
         },
         relationshipManager: 'Marcus Vance, VP Commercial Banking',
         accountNumbers: {
-          operatingChecking: '****-7719',
-          treasuryMoneyMarket: '****-2204',
-          activeCreditLine: '****-3310 (₹15 Lakhs limit, ₹0 drawn)',
+          operatingChecking: `****-${Math.floor(1000 + Math.random() * 9000)}`,
+          treasuryMoneyMarket: `****-${Math.floor(1000 + Math.random() * 9000)}`,
+          activeCreditLine: `****-${Math.floor(1000 + Math.random() * 9000)} (₹15 Lakhs limit, ₹0 drawn)`,
         },
-        tags: ['Specialty Coffee', 'Retail Cafes', 'Green Bean Commodities', 'B2B Wholesale'],
-        businessDescription: 'Regional specialty coffee roaster operating 3 flagship cafes with a rapidly expanding wholesale distribution arm supplying boutique grocers.',
-        financialKPIs: {
-          quickRatio: parseFloat(quickRatio) || 1.25,
-          quickRatioYoY: 0.1,
-          quickRatioBenchmark: 1.15,
-          monthlyBurnRate: parseInt(burnRate, 10) || 32,
-          burnRateQoQ: 8,
-          runwayMonths: 10,
-          operatingMargin: 16,
-          operatingMarginTrend: 'flat',
-          operatingMarginBenchmark: 14,
-          dscr: 1.45,
-          dscrBenchmark: 1.25,
-          cashBufferDays: 45,
-          averageMonthlyRevenue: 1625000,
-        },
-        arAging: {
-          current: 1100000,
-          days31to60: 480000,
-          days61to90: 190000,
-          days90Plus: 50000,
-          totalOutstanding: 1820000,
-          invoices: [
-            {
-              id: 'INV-CAR-101',
-              debtor: 'Marketplace Pantry Grocers',
-              invoiceDate: '2026-06-25',
-              dueDate: '2026-07-25',
-              daysOverdue: 25,
-              amount: 320000,
-              status: 'Current',
-              notes: 'Weekly wholesale roast deliveries.',
-            },
-          ],
-        },
-        vendorCostDrivers: [
-          {
-            vendor: 'Equatorial Green Coffee Importers',
-            category: 'Raw Green Coffee Beans',
-            q2Cost: 620000,
-            q2CostPriorYear: 530000,
-            pctChange: 17.0,
-            impactLevel: 'High',
-            notes: 'Arabica commodity futures volatility and freight surcharges.',
-          },
-        ],
+        tags: data.tags || [industry, 'MSME Growth'],
+        businessDescription: data.businessDescription,
+        financialKPIs: data.financialKPIs,
+        arAging: data.arAging,
+        vendorCostDrivers: data.vendorCostDrivers,
+        cashFlowTrajectory: data.cashFlowTrajectory,
       };
 
-      setAnalyzing(false);
-      onClientCreated(newClient);
+      onClientCreated(newClient, data.riskAlerts, data.recommendations, data.cashFlowTrajectory);
       onClose();
-    }, 1200);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Error generating diagnostic analysis');
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
       <div className="bg-white rounded-lg max-w-xl w-full border border-[#c4c6cf] shadow-xl flex flex-col">
-        {/* Header */}
         <div className="p-4 md:p-5 border-b border-gray-200 flex justify-between items-center bg-[#f7fafc] rounded-t-lg">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-[#1960a3]" />
             <div>
               <h2 className="text-lg font-bold text-[#002045]">
-                New Small Business AI Advisory Intake (₹ INR)
+                AI Client Financial Intake & Diagnosis (₹ INR)
               </h2>
               <p className="text-xs text-[#74777f]">
-                Upload financial ledger or enter business profile parameters in Rupees
+                Gemini analyzes business parameters and generates an underwriting profile
               </p>
             </div>
           </div>
@@ -123,25 +112,31 @@ export const NewAnalysisModal: React.FC<NewAnalysisModalProps> = ({
           </button>
         </div>
 
+        {error && (
+          <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         <form onSubmit={handleRunAnalysis} className="p-4 md:p-6 space-y-4 text-xs">
-          {/* Quick Ledger Drag & Drop Box */}
           <div className="p-4 border-2 border-dashed border-gray-300 rounded-lg text-center bg-slate-50/60 hover:bg-slate-50 cursor-pointer">
             <FileSpreadsheet className="w-8 h-8 text-[#1960a3] mx-auto mb-1 opacity-80" />
             <span className="font-semibold text-gray-800 block text-xs">
-              Drag & Drop Bank Ledger CSV / Tally / Zoho / GST Export
+              Upload Tally / Zoho / GST Return / Bank Statement CSV
             </span>
             <span className="text-[10px] text-gray-500">
-              Auto-anonymizes PII, normalizes Indian MSME categories & detects cash flow stress points
+              AI automatically extracts financials, maps AR aging, and forecasts seasonal cash flow
             </span>
           </div>
 
           <div className="text-center font-mono text-[10px] text-gray-400 uppercase tracking-wider">
-            — Or Enter Business Profile Details —
+            Or Provide Business Parameters
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="font-semibold text-gray-700 block mb-1">Company / DBA Name</label>
+              <label className="font-semibold text-gray-700 block mb-1">Company / Entity Name</label>
               <input
                 type="text"
                 value={companyName}
@@ -193,6 +188,17 @@ export const NewAnalysisModal: React.FC<NewAnalysisModalProps> = ({
             </div>
           </div>
 
+          <div>
+            <label className="font-semibold text-gray-700 block mb-1">Operational Observations / Notes</label>
+            <textarea
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. Major buyer payment cycle delays, raw material inflation, upcoming equipment capex..."
+              className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-[#1960a3] outline-none"
+            />
+          </div>
+
           <div className="flex justify-end gap-2 pt-3 border-t border-gray-200">
             <button
               type="button"
@@ -207,11 +213,14 @@ export const NewAnalysisModal: React.FC<NewAnalysisModalProps> = ({
               className="px-4 py-1.5 bg-[#002045] text-white rounded font-bold hover:bg-[#1a365d] flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
             >
               {analyzing ? (
-                <span>Generating Diagnostic Analysis...</span>
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Synthesizing Gemini Diagnosis...</span>
+                </>
               ) : (
                 <>
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Run Advisory Assessment</span>
+                  <span>Run Full AI Assessment</span>
                 </>
               )}
             </button>
