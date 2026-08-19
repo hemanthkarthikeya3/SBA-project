@@ -1,15 +1,13 @@
-import express from "express";
+  import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type, Schema } from "@google/genai";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
-
+  const PORT = process.env.PORT || 3000;
   app.use(express.json({ limit: "10mb" }));
 
-  // Helper to initialize Google Gen AI safely
   const getAI = () => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return null;
@@ -17,7 +15,7 @@ async function startServer() {
       apiKey,
       httpOptions: {
         headers: {
-          "User-Agent": "aistudio-build",
+          "User-Agent": "advisory-ai-rm",
         },
       },
     });
@@ -33,7 +31,7 @@ async function startServer() {
     });
   });
 
-  // Copilot Chat API endpoint
+  // Copilot Chat API with Structured AI Grounding
   app.post("/api/copilot/chat", async (req, res) => {
     try {
       const { message, client, conversationHistory } = req.body;
@@ -46,137 +44,431 @@ async function startServer() {
       if (ai) {
         const clientContext = client
           ? `
-Current Small Business MSME Client Profile:
-- Name: ${client.name}
-- Industry: ${client.industry}
-- Risk Tier: ${client.riskTier}
+Client Financial Profile:
+- Company Name: ${client.name} (${client.industry})
+- Risk Tier: ${client.riskTier} | Client Since: ${client.clientSince}
 - Annual Turnover / Revenue: ${client.annualRevenue}
-- Currency: Indian Rupees (₹ / Lakhs / Crores)
-- Quick Ratio: ${client.financialKPIs?.quickRatio} (Benchmark: ${client.financialKPIs?.quickRatioBenchmark})
-- Monthly Burn Rate: ₹${client.financialKPIs?.monthlyBurnRate}k (Runway: ${client.financialKPIs?.runwayMonths} months)
+- Quick Ratio: ${client.financialKPIs?.quickRatio} (Industry Benchmark: ${client.financialKPIs?.quickRatioBenchmark})
+- Monthly Net Burn Rate: ₹${client.financialKPIs?.monthlyBurnRate}k (Runway: ${client.financialKPIs?.runwayMonths} months)
 - Operating Margin: ${client.financialKPIs?.operatingMargin}% (Benchmark: ${client.financialKPIs?.operatingMarginBenchmark}%)
-- Total AR Outstanding: ₹${client.arAging?.totalOutstanding?.toLocaleString('en-IN') || 0} (₹${client.arAging?.days31to60?.toLocaleString('en-IN') || 0} in 31-60d, ₹${client.arAging?.days61to90?.toLocaleString('en-IN') || 0} in 61-90d)
-- Overdue Invoices: ${JSON.stringify(client.arAging?.invoices || [])}
-- Vendor Cost Drivers: ${JSON.stringify(client.vendorCostDrivers || [])}
+- Cash Buffer Days: ${client.financialKPIs?.cashBufferDays} days | DSCR: ${client.financialKPIs?.dscr}x
+- Total AR Outstanding: ₹${client.arAging?.totalOutstanding?.toLocaleString("en-IN")}
+  * 0-30d Current: ₹${client.arAging?.current?.toLocaleString("en-IN")}
+  * 31-60d Overdue: ₹${client.arAging?.days31to60?.toLocaleString("en-IN")}
+  * 61-90d Overdue: ₹${client.arAging?.days61to90?.toLocaleString("en-IN")}
+  * 90d+ Critical: ₹${client.arAging?.days90Plus?.toLocaleString("en-IN")}
+- Detailed AR Invoices: ${JSON.stringify(client.arAging?.invoices || [])}
+- Vendor Cost Drivers & Inflation Spikes: ${JSON.stringify(client.vendorCostDrivers || [])}
 `
-          : "General Small Business Banking Advisory Context (INR / ₹ Currency)";
+          : "Generic Commercial MSME Banking Advisory context in Indian Rupees (₹).";
 
-        const systemInstruction = `
-You are the AI Advisory Copilot for Commercial & MSME Relationship Managers (RMs) in Small Business Banking.
-Your role:
-1. Provide proactive, data-grounded financial wellness, working capital, and risk advisory for small businesses.
-2. ALWAYS use Indian Rupees (₹ / Lakhs / Crores) for all currency values and calculations.
-3. Avoid generic, pushy, or hard-coded product selling. Focus on consultative business value, cash flow preservation, margin defense, TReDS invoice discounting, and explainable decision support.
-4. Reference specific ledger facts, customer debtors (e.g. Whole Foods Regional, Sprouts), vendor cost surges (e.g. EcoTransit Solutions +12% logistics), and bank risk policies.
-5. Keep answers concise, highly structured, and relationship-manager focused. Include actionable next steps for the banker.
-6. Format your output with clear bold highlights, bullet points, and reference citations when applicable.
-`;
+        const systemInstruction = `You are the Lead Commercial Banking AI Advisory Copilot assisting Relationship Managers (RMs).
+Your goals:
+1. Provide consultative, mathematically grounded financial analysis in Indian Rupees (₹, Lakhs, Crores).
+2. Avoid hard selling. Prioritize cash flow preservation, margin defense, working capital optimization, and MSME policy alignments (TReDS, CGTMSE, Cash Sweep, CC/OD).
+3. Always generate grounded citations when referencing specific client invoices, vendor cost lines, or regulatory policies.
+4. Provide 3 specific next-step prompts for the Relationship Manager.`;
 
-        const prompt = `
+        const responseSchema: Schema = {
+          type: Type.OBJECT,
+          properties: {
+            text: {
+              type: Type.STRING,
+              description: "Structured markdown advisory answer for the Relationship Manager.",
+            },
+            citations: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  type: {
+                    type: Type.STRING,
+                    enum: ["ledger", "policy", "invoice", "market_benchmark"],
+                  },
+                  snippet: { type: Type.STRING },
+                },
+                required: ["id", "title", "type", "snippet"],
+              },
+              description: "Factual ledger or policy citations directly supporting the response.",
+            },
+            suggestedFollowUps: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "2-3 short, highly actionable next question prompts for the banker.",
+            },
+          },
+          required: ["text", "citations", "suggestedFollowUps"],
+        };
+
+        const chatPrompt = `
 ${clientContext}
 
 Conversation History:
-${(conversationHistory || []).map((h: any) => `${h.sender === "rm" ? "Relationship Manager" : "Copilot"}: ${h.text}`).join("\n")}
+${(conversationHistory || [])
+  .map((h: any) => `${h.sender === "rm" ? "Relationship Manager" : "Copilot"}: ${h.text}`)
+  .join("\n")}
 
 Relationship Manager Query: "${message}"
 
-Respond directly, providing clear analysis, specific numbers in INR (₹) from the ledger, grounded citations or policy references, and 2-3 suggested follow-up questions for the RM.
-`;
+Analyze the ledger data and formulate an articulate, data-backed advisory briefing with relevant citations.`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-3.7-flash",
-          contents: prompt,
+          model: "gemini-2.5-flash",
+          contents: chatPrompt,
           config: {
             systemInstruction,
-            temperature: 0.3,
+            temperature: 0.2,
+            responseMimeType: "application/json",
+            responseSchema,
           },
         });
 
-        const replyText = response.text || "I have analyzed the client records and generated recommendations based on current cash flow trajectories.";
-
-        // Generate relevant domain citations based on content
-        const citations = [];
-        if (message.toLowerCase().includes("supply") || message.toLowerCase().includes("vendor") || message.toLowerCase().includes("cost") || message.toLowerCase().includes("ecotransit")) {
-          citations.push({
-            id: "cite-ecotransit",
-            title: "EcoTransit Solutions Cold-Chain Ledger (Q2)",
-            type: "ledger" as const,
-            snippet: "Q2 Logistics cost ₹4,86,000 (+12.0% YoY vs ₹4,34,000). Expedited refrigerated transport routes to regional grocery hubs with diesel fuel surcharges.",
-          });
-        }
-        if (message.toLowerCase().includes("receivable") || message.toLowerCase().includes("whole foods") || message.toLowerCase().includes("ar") || message.toLowerCase().includes("aging")) {
-          citations.push({
-            id: "cite-ar-aging",
-            title: "AR Aging Schedule & Whole Foods Hub Invoices",
-            type: "invoice" as const,
-            snippet: "INV-2026-088 (₹6.45 Lakhs, 38d overdue) + INV-2026-071 (₹3.80 Lakhs, 62d overdue). ERP transition delay at debtor hub.",
-          });
-        }
-        if (message.toLowerCase().includes("loan") || message.toLowerCase().includes("policy") || message.toLowerCase().includes("credit") || message.toLowerCase().includes("eligibility") || message.toLowerCase().includes("treds")) {
-          citations.push({
-            id: "cite-bank-policy",
-            title: "MSME Commercial Credit & TReDS Policy §4.2",
-            type: "policy" as const,
-            snippet: "Wholesale suppliers to corporate buyers qualify for 90% instant advance at 1.15% discount per 30 days without long-term debt covenants.",
-          });
-        }
-
-        return res.json({
-          text: replyText,
-          citations,
-          suggestedFollowUps: [
-            "Check eligibility for Working Capital CC/OD line",
-            "Simulate 20% seasonal revenue dip in Q3",
-            "Draft client advisory review agenda",
-          ],
-        });
+        const parsed = JSON.parse(response.text || "{}");
+        return res.json(parsed);
       }
 
-      // Contextual fallback when Gemini API key is processing or local
-      let fallbackText = `I have analyzed ${client?.name || "the client"}'s recent financial ledger and transactions in Rupees (₹).`;
-      const lower = message.toLowerCase();
-      const citations = [];
-
-      if (lower.includes("supply chain") || lower.includes("vendor") || lower.includes("cost") || lower.includes("ecotransit")) {
-        fallbackText = `Q2 supply chain costs increased by **8.4% YoY overall**.\n\nThe primary driver is a **12.0% increase** in cold-chain logistics from *EcoTransit Solutions* (₹4,86,000 vs ₹4,34,000 prior year). Packaging and soil amendment costs remained stable (+1.0% and +4.8% respectively).\n\n**Advisory Recommendation**: Suggest exploring our Commercial Fleet Fuel Hedging program or negotiating quarterly volume freight tiers with regional carriers to protect operating margins.`;
-        citations.push({
-          id: "cite-1",
-          title: "EcoTransit Ledger.pdf",
-          type: "ledger" as const,
-          snippet: "Q2 Logistics spend rose from ₹4.34 Lakhs to ₹4.86 Lakhs (+12% YoY) driven by diesel fuel surcharges.",
-        });
-      } else if (lower.includes("loan") || lower.includes("credit") || lower.includes("eligibility")) {
-        fallbackText = `**Credit & Facility Eligibility Assessment for ${client?.name || "Green Valley Organics"}**:\n\n- **Current DSCR**: **${client?.financialKPIs?.dscr || 1.62}x** (Exceeds bank threshold of 1.25x)\n- **Quick Ratio**: **${client?.financialKPIs?.quickRatio || 1.4}** (Healthy vs 1.1 benchmark)\n- **Eligible Facilities**:\n  1. *Secured Working Capital CC/OD Line*: Pre-qualified for up to **₹35,00,000 (₹35 Lakhs)** at RBLR + 1.25%.\n  2. *TReDS / Selective AR Acceleration*: Instant 90% advance on Whole Foods & Sprouts invoices at 1.15% discount rate.\n  3. *CGTMSE Growth Term Loan*: Eligible for up to ₹1.2 Crore with 7-year amortization.\n\n*Compliance Note*: Standard MSME classification with pristine track record.`;
-        citations.push({
-          id: "cite-policy",
-          title: "MSME Commercial Underwriting Guidelines 2026",
-          type: "policy" as const,
-          snippet: "Businesses with DSCR > 1.35x and Quick Ratio > 1.2x qualify for expedited delegated credit committee sanction.",
-        });
-      } else if (lower.includes("receivable") || lower.includes("ar") || lower.includes("aging") || lower.includes("whole foods")) {
-        fallbackText = `**Accounts Receivable Breakdown (INR)**:\n\n- **Total Outstanding**: ₹32,90,000 (₹32.9 Lakhs) across 4 major commercial buyers.\n- **Delayed Aging (>30 days)**: ₹14,40,000 (43.7% of total AR).\n- **Primary Concentration**: *Whole Foods Regional Hub* represents **₹10,25,000 (₹10.25 Lakhs)** across two overdue invoices (38 days and 62 days overdue).\n\n**Actionable RM Strategy**: Recommend TReDS non-recourse invoice discounting to bridge the gap during Whole Foods' ERP system migration, protecting August payroll without adding balance sheet debt.`;
-        citations.push({
-          id: "cite-ar",
-          title: "Accounts Receivable Aging Schedule - July 2026",
-          type: "invoice" as const,
-          snippet: "Whole Foods Hub INV-2026-088 (₹6.45L) and INV-2026-071 (₹3.80L) represent 71% of aged receivables > 30 days.",
-        });
-      } else {
-        fallbackText = `Based on the latest monthly cash flow model for **${client?.name || "Green Valley Organics"}**:\n\n- **Current Cash Runway**: **${client?.financialKPIs?.runwayMonths || 14} Months** (₹42k/mo net burn rate).\n- **Proactive Risk Highlight**: Historical agricultural data indicates an upcoming **20% seasonal dip in Q3** (harvest transition), compounded by ₹10.25 Lakhs in delayed wholesale receivables.\n- **Recommended Banker Focus**: Review liquidity buffers and present the **Selective AR Acceleration** and **Automated Insured Cash Sweep (6.85% p.a.)** to maximize cash stability and interest earnings.`;
-      }
-
+      // Dynamic fallback for offline/local development without API key
       return res.json({
-        text: fallbackText,
-        citations,
+        text: `**Analysis for ${client?.name || "Client"}**:\n\n- **Quick Ratio**: **${client?.financialKPIs?.quickRatio || 1.4}x** vs benchmark ${client?.financialKPIs?.quickRatioBenchmark || 1.1}x.\n- **Cash Runway**: **${client?.financialKPIs?.runwayMonths || 12} Months** (Net Burn: ₹${client?.financialKPIs?.monthlyBurnRate || 40}k/mo).\n- **Working Capital Recommendation**: Review AR aging and consider automated TReDS invoice discounting to stabilize operating cash buffers.`,
+        citations: [
+          {
+            id: "cite-local-ledger",
+            title: `${client?.name || "Client"} Financial Summary`,
+            type: "ledger",
+            snippet: `Current Outstanding AR: ₹${client?.arAging?.totalOutstanding?.toLocaleString("en-IN") || "30,00,000"}.`,
+          },
+        ],
         suggestedFollowUps: [
-          "Check loan eligibility",
-          "Summarize latest credit policy",
-          "Simulate Q3 Stress Test",
+          "Check working capital CC/OD eligibility",
+          "Simulate 20% seasonal revenue dip",
+          "Draft client advisory review agenda",
         ],
       });
     } catch (err: any) {
       console.error("Error in /api/copilot/chat:", err);
       res.status(500).json({ error: err.message || "Failed to process advisory query" });
+    }
+  });
+
+  // AI-Driven Client Intake Diagnostic (Transforms raw business input into structured client analysis)
+  app.post("/api/advisory/analyze-new-client", async (req, res) => {
+    try {
+      const { companyName, industry, annualRevenue, quickRatio, burnRate, notes } = req.body;
+      const ai = getAI();
+
+      if (ai) {
+        const prompt = `Analyze this small business intake for a commercial bank relationship manager:
+- Company Name: ${companyName}
+- Industry: ${industry}
+- Annual Turnover / Revenue: ${annualRevenue}
+- Estimated Quick Ratio: ${quickRatio}
+- Estimated Monthly Burn Rate: ₹${burnRate}k
+- Additional Business Context / Raw Notes: ${notes || "None provided"}
+
+Generate a complete, realistic client profile, including:
+1. Contact info and account numbers.
+2. Core Financial KPIs (DSCR, runway months, buffer days, operating margin).
+3. 4-bucket AR Aging schedule with 2-3 realistic sample overdue invoices.
+4. 2 major vendor cost drivers with YoY variances.
+5. 2-3 proactive risk alerts.
+6. 2 Next-Best-Action consultative advisory recommendations with suitability scores and explainability factors.
+7. A 14-month cash flow trajectory array (9 historical months + 5 predicted months) in thousands of INR.`;
+
+        const responseSchema: Schema = {
+          type: Type.OBJECT,
+          properties: {
+            businessDescription: { type: Type.STRING },
+            riskTier: { type: Type.STRING, enum: ["Low", "Moderate", "Elevated", "High"] },
+            employees: { type: Type.NUMBER },
+            contactPerson: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                title: { type: Type.STRING },
+                email: { type: Type.STRING },
+                phone: { type: Type.STRING },
+              },
+              required: ["name", "title", "email", "phone"],
+            },
+            tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            financialKPIs: {
+              type: Type.OBJECT,
+              properties: {
+                quickRatio: { type: Type.NUMBER },
+                quickRatioYoY: { type: Type.NUMBER },
+                quickRatioBenchmark: { type: Type.NUMBER },
+                monthlyBurnRate: { type: Type.NUMBER },
+                burnRateQoQ: { type: Type.NUMBER },
+                runwayMonths: { type: Type.NUMBER },
+                operatingMargin: { type: Type.NUMBER },
+                operatingMarginTrend: { type: Type.STRING, enum: ["up", "flat", "down"] },
+                operatingMarginBenchmark: { type: Type.NUMBER },
+                dscr: { type: Type.NUMBER },
+                dscrBenchmark: { type: Type.NUMBER },
+                cashBufferDays: { type: Type.NUMBER },
+                averageMonthlyRevenue: { type: Type.NUMBER },
+              },
+              required: ["quickRatio", "monthlyBurnRate", "runwayMonths", "operatingMargin", "dscr", "cashBufferDays"],
+            },
+            arAging: {
+              type: Type.OBJECT,
+              properties: {
+                current: { type: Type.NUMBER },
+                days31to60: { type: Type.NUMBER },
+                days61to90: { type: Type.NUMBER },
+                days90Plus: { type: Type.NUMBER },
+                totalOutstanding: { type: Type.NUMBER },
+                invoices: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      debtor: { type: Type.STRING },
+                      invoiceDate: { type: Type.STRING },
+                      dueDate: { type: Type.STRING },
+                      daysOverdue: { type: Type.NUMBER },
+                      amount: { type: Type.NUMBER },
+                      status: { type: Type.STRING },
+                      notes: { type: Type.STRING },
+                    },
+                    required: ["id", "debtor", "amount", "status", "notes"],
+                  },
+                },
+              },
+              required: ["current", "days31to60", "days61to90", "days90Plus", "totalOutstanding", "invoices"],
+            },
+            vendorCostDrivers: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  vendor: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  q2Cost: { type: Type.NUMBER },
+                  q2CostPriorYear: { type: Type.NUMBER },
+                  pctChange: { type: Type.NUMBER },
+                  impactLevel: { type: Type.STRING, enum: ["High", "Moderate", "Low"] },
+                  notes: { type: Type.STRING },
+                },
+                required: ["vendor", "category", "q2Cost", "pctChange", "impactLevel", "notes"],
+              },
+            },
+            riskAlerts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  type: { type: Type.STRING, enum: ["delayed_ar", "seasonal_dip", "supplier_cost", "working_capital"] },
+                  title: { type: Type.STRING },
+                  severity: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+                  description: { type: Type.STRING },
+                  impactMetric: { type: Type.STRING },
+                  actionText: { type: Type.STRING },
+                  actionModal: { type: Type.STRING, enum: ["ar_aging", "stress_test", "vendor_ledger", "working_capital"] },
+                },
+                required: ["id", "type", "title", "severity", "description", "impactMetric", "actionText", "actionModal"],
+              },
+            },
+            recommendations: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  suitabilityScore: { type: Type.NUMBER },
+                  summary: { type: Type.STRING },
+                  keyBenefit: { type: Type.STRING },
+                  clientPitch: { type: Type.STRING },
+                  whyThisRecommendation: {
+                    type: Type.OBJECT,
+                    properties: {
+                      underlyingSignals: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      policyMatch: { type: Type.STRING },
+                      riskMitigationFactor: { type: Type.STRING },
+                      responsibleBankingCheck: { type: Type.STRING },
+                    },
+                    required: ["underlyingSignals", "policyMatch", "riskMitigationFactor", "responsibleBankingCheck"],
+                  },
+                  suggestedProduct: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING },
+                      rateOrFee: { type: Type.STRING },
+                      maxFacility: { type: Type.STRING },
+                      timeToDeploy: { type: Type.STRING },
+                    },
+                    required: ["name", "rateOrFee", "maxFacility", "timeToDeploy"],
+                  },
+                },
+                required: ["id", "title", "category", "suitabilityScore", "summary", "keyBenefit", "clientPitch", "whyThisRecommendation", "suggestedProduct"],
+              },
+            },
+            cashFlowTrajectory: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  month: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  isHistorical: { type: Type.BOOLEAN },
+                  historicalInflow: { type: Type.NUMBER },
+                  historicalOutflow: { type: Type.NUMBER },
+                  predictedInflow: { type: Type.NUMBER },
+                  predictedOutflow: { type: Type.NUMBER },
+                  netCash: { type: Type.NUMBER },
+                  stressedInflow: { type: Type.NUMBER },
+                  stressedOutflow: { type: Type.NUMBER },
+                  events: { type: Type.STRING },
+                },
+                required: ["month", "label", "isHistorical", "netCash"],
+              },
+            },
+          },
+          required: [
+            "businessDescription",
+            "riskTier",
+            "employees",
+            "contactPerson",
+            "tags",
+            "financialKPIs",
+            "arAging",
+            "vendorCostDrivers",
+            "riskAlerts",
+            "recommendations",
+            "cashFlowTrajectory",
+          ],
+        };
+
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: prompt,
+          config: {
+            temperature: 0.3,
+            responseMimeType: "application/json",
+            responseSchema,
+          },
+        });
+
+        const generatedData = JSON.parse(response.text || "{}");
+        return res.json(generatedData);
+      }
+
+      // Fallback response if AI is offline
+      const parsedQuick = parseFloat(quickRatio) || 1.2;
+      const parsedBurn = parseInt(burnRate, 10) || 35;
+      return res.json({
+        businessDescription: `${companyName} operates in the ${industry} sector with strong localized market footprint.`,
+        riskTier: parsedQuick >= 1.2 ? "Low" : "Moderate",
+        employees: 18,
+        contactPerson: {
+          name: "Managing Director",
+          title: "Principal Partner",
+          email: "management@business.in",
+          phone: "+91 98400 11223",
+        },
+        tags: [industry, "Commercial MSME", "Growth Stage"],
+        financialKPIs: {
+          quickRatio: parsedQuick,
+          quickRatioYoY: 0.1,
+          quickRatioBenchmark: 1.15,
+          monthlyBurnRate: parsedBurn,
+          burnRateQoQ: 4,
+          runwayMonths: 12,
+          operatingMargin: 16,
+          operatingMarginTrend: "flat",
+          operatingMarginBenchmark: 14,
+          dscr: 1.5,
+          dscrBenchmark: 1.25,
+          cashBufferDays: 45,
+          averageMonthlyRevenue: 2000000,
+        },
+        arAging: {
+          current: 1200000,
+          days31to60: 450000,
+          days61to90: 180000,
+          days90Plus: 50000,
+          totalOutstanding: 1880000,
+          invoices: [
+            {
+              id: "INV-2026-001",
+              debtor: "Regional Supermarket Partner",
+              invoiceDate: "2026-06-15",
+              dueDate: "2026-07-15",
+              daysOverdue: 28,
+              amount: 450000,
+              status: "Current",
+              notes: "Regular billing cycle reconciliation.",
+            },
+          ],
+        },
+        vendorCostDrivers: [
+          {
+            vendor: "Primary Raw Material Supplier",
+            category: "Core Supplies",
+            q2Cost: 520000,
+            q2CostPriorYear: 480000,
+            pctChange: 8.3,
+            impactLevel: "Moderate",
+            notes: "Quarterly freight adjustment.",
+          },
+        ],
+        riskAlerts: [
+          {
+            id: `alert-${Date.now()}-1`,
+            type: "delayed_ar",
+            title: "Overdue Receivables Notification",
+            severity: "Medium",
+            description: "₹4.5 Lakhs in receivables nearing 30+ day aging threshold.",
+            impactMetric: "₹4.5L at risk of aging",
+            actionText: "Inspect AR Schedule",
+            actionModal: "ar_aging",
+          },
+        ],
+        recommendations: [
+          {
+            id: `rec-${Date.now()}-1`,
+            title: "Selective Receivables Acceleration Line",
+            category: "Receivables Acceleration",
+            suitabilityScore: 91,
+            summary: "Accelerate cash realization from top enterprise clients at 1.15% discount.",
+            keyBenefit: "Improves cash conversion cycle by ~25 days.",
+            clientPitch: "We can set up an instant TReDS invoice discounting limit to protect working capital.",
+            whyThisRecommendation: {
+              underlyingSignals: ["Healthy quick ratio and clean corporate billing track record."],
+              policyMatch: "MSME Commercial Underwriting Policy 4.2",
+              riskMitigationFactor: "Non-recourse cash injection prevents short-term debt build-up.",
+              responsibleBankingCheck: "Transparent discount rates with zero early lock-in penalties.",
+            },
+            suggestedProduct: {
+              name: "TReDS Invoice Acceleration",
+              rateOrFee: "1.15% per 30 days",
+              maxFacility: "₹25,00,000",
+              timeToDeploy: "48 Hours",
+            },
+          },
+        ],
+        cashFlowTrajectory: [
+          { month: "2026-01", label: "Jan 26", isHistorical: true, historicalInflow: 210, historicalOutflow: 180, netCash: 30 },
+          { month: "2026-02", label: "Feb 26", isHistorical: true, historicalInflow: 220, historicalOutflow: 185, netCash: 35 },
+          { month: "2026-03", label: "Mar 26", isHistorical: true, historicalInflow: 235, historicalOutflow: 195, netCash: 40 },
+          { month: "2026-04", label: "Apr 26", isHistorical: true, historicalInflow: 230, historicalOutflow: 190, netCash: 40 },
+          { month: "2026-05", label: "May 26", isHistorical: true, historicalInflow: 245, historicalOutflow: 205, netCash: 40 },
+          { month: "2026-06", label: "Jun 26", isHistorical: true, historicalInflow: 225, historicalOutflow: 210, netCash: 15 },
+          { month: "2026-07", label: "Jul 26", isHistorical: true, historicalInflow: 220, historicalOutflow: 215, netCash: 5 },
+          { month: "2026-08", label: "Aug 26 (P)", isHistorical: false, predictedInflow: 190, predictedOutflow: 205, netCash: -15, stressedInflow: 170, stressedOutflow: 215 },
+          { month: "2026-09", label: "Sep 26 (P)", isHistorical: false, predictedInflow: 185, predictedOutflow: 200, netCash: -15, stressedInflow: 165, stressedOutflow: 210 },
+          { month: "2026-10", label: "Oct 26 (P)", isHistorical: false, predictedInflow: 240, predictedOutflow: 200, netCash: 40, stressedInflow: 215, stressedOutflow: 205 },
+        ],
+      });
+    } catch (err: any) {
+      console.error("Error in /api/advisory/analyze-new-client:", err);
+      res.status(500).json({ error: err.message || "Failed to analyze intake" });
     }
   });
 
@@ -187,95 +479,38 @@ Respond directly, providing clear analysis, specific numbers in INR (₹) from t
       const ai = getAI();
 
       if (ai && client) {
-        const prompt = `
-Generate a professional, highly articulate small business banking advisory document in Indian Rupees (₹ / Lakhs / Crores) for the Relationship Manager to share or use with the client.
+        const prompt = `Generate an authoritative, highly professional commercial banking advisory memorandum in Indian Rupees (₹ / Lakhs / Crores) for the Relationship Manager.
 Client: ${client.name} (${client.industry})
 Contact: ${client.contactPerson?.name}, ${client.contactPerson?.title}
-Tone: ${tone || "Empathetic & Consultative Financial Partner"}
+Presentation Tone: ${tone || "Empathetic & Consultative Financial Partner"}
 Focus Area: ${focusArea || "Cash Flow Optimization, Receivables Relief & Treasury Yield"}
-Financial Context: Quick Ratio ${client.financialKPIs?.quickRatio}, Runway ${client.financialKPIs?.runwayMonths} months, AR Outstanding ₹${client.arAging?.totalOutstanding?.toLocaleString('en-IN')}, Delayed AR ₹${(client.arAging?.days31to60 + client.arAging?.days61to90)?.toLocaleString('en-IN')}.
+Financial KPIs: Quick Ratio ${client.financialKPIs?.quickRatio}, Runway ${client.financialKPIs?.runwayMonths} months, AR Outstanding ₹${client.arAging?.totalOutstanding?.toLocaleString("en-IN")}.
 
-Output format:
+Format:
 1. Executive Meeting Briefing / Email Subject & Body (in Indian Rupees ₹)
-2. Key Observations (Transparent & grounded in their ledger data)
-3. Tailored Advisory Recommendations (Framed around business value, avoiding hard selling)
-4. Proposed Next Steps & Discussion Agenda for upcoming review
-`;
+2. Grounded Observations (Ledger facts, debtor aging, vendor inflation)
+3. Tailored Advisory Solutions (Transparent non-predatory banking options)
+4. Actionable Next Steps & Review Agenda`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-3.7-flash",
+          model: "gemini-2.5-flash",
           contents: prompt,
+          config: { temperature: 0.3 },
         });
 
         return res.json({ content: response.text });
       }
 
-      // Default structured memo in Rupees (₹)
-      const content = `SUBJECT: Financial Health Review & Proactive Working Capital Optimization — ${client?.name || "Green Valley Organics"}
-
-Dear ${client?.contactPerson?.name || "Elena"},
-
-I hope your summer harvest operations are progressing smoothly. 
-
-As part of our proactive relationship banking commitment, our advisory analytics team conducted a mid-year liquidity and cash flow review for Green Valley Organics. We noticed several strong positive indicators alongside two strategic areas where we can help safeguard your cash flow during the upcoming Q3 seasonal transition.
-
-### 1. Key Financial Observations
-- **Healthy Balance Sheet Foundation**: Your Quick Ratio stands strong at **1.4x** (above the 1.1x industry benchmark), providing 14 months of operating runway.
-- **Receivables Lengthening**: Due to recent ERP transitions at regional wholesale supermarket distributors (such as Whole Foods), accounts receivable past 30 days have expanded to **₹10,25,000 (₹10.25 Lakhs)**.
-- **Cold-Chain Logistics Surge**: Q2 logistics costs increased by **12.0% YoY** via EcoTransit Solutions (₹4,86,000 total spend).
-
-### 2. Proactive Advisory Solutions (Non-Debt & Liquidity Support)
-1. **TReDS & Selective Receivables Acceleration**: We can activate an automated same-day invoice advance on your approved wholesale grocer accounts at a 1.15% discount. This frees up ₹10.25 Lakhs in trapped cash without adding balance sheet debt.
-2. **Automated Insured Cash Sweep (ICS)**: Put your ₹32 Lakhs operating cash float into top-tier government liquidity funds earning **6.85% p.a.** overnight with zero lockup or payroll interruption.
-
-### 3. Proposed Discussion Agenda for Our Upcoming Review
-- [ ] Review Q3 harvest cash flow forecast & stress scenarios
-- [ ] Walk through invoice acceleration setup (takes under 48 hours)
-- [ ] Review vendor freight discount structures
-
-Warm regards,
-
-**Marcus Vance**
-VP, Commercial Banking Relationship Manager
-Small Business Advisory Group`;
-
-      return res.json({ content });
+      return res.json({
+        content: `SUBJECT: Financial Health Review & Proactive Working Capital Optimization - ${client?.name}\n\nDear ${client?.contactPerson?.name || "Client"},\n\nWe have completed our periodic liquidity review for ${client?.name}. With a strong Quick Ratio of ${client?.financialKPIs?.quickRatio}x and ${client?.financialKPIs?.runwayMonths} months of operating runway, your balance sheet remains resilient.\n\nWe recommend reviewing the ₹${((client?.arAging?.days31to60 || 0) + (client?.arAging?.days61to90 || 0)).toLocaleString("en-IN")} in aged receivables to unlock liquidity before the upcoming quarter.`,
+      });
     } catch (err: any) {
       console.error("Error in /api/advisory/generate-summary:", err);
       res.status(500).json({ error: err.message || "Failed to generate briefing" });
     }
   });
 
-  // What-If Cash Flow Stress Test Simulation API
-  app.post("/api/stress/simulate", (req, res) => {
-    const { client, revenueDropPct = 20, cogsSurgePct = 10, arDelayDays = 30 } = req.body;
-
-    const baseBurn = client?.financialKPIs?.monthlyBurnRate || 42;
-    const baseRevenue = client?.financialKPIs?.averageMonthlyRevenue || 2375000;
-    const baseRunway = client?.financialKPIs?.runwayMonths || 14;
-
-    // Recalculate stress impact
-    const monthlyRevenueImpact = (baseRevenue * (revenueDropPct / 100));
-    const monthlyCostImpact = ((baseBurn * 1000) * (cogsSurgePct / 100));
-    const totalMonthlyCashDrag = (monthlyRevenueImpact + monthlyCostImpact) / 1000;
-    const stressedMonthlyBurn = Math.round(baseBurn + totalMonthlyCashDrag);
-    const stressedRunwayMonths = Math.max(2, Math.round((baseRunway * baseBurn) / Math.max(1, stressedMonthlyBurn)));
-    const stressedCashBufferDays = Math.max(12, Math.round(client?.financialKPIs?.cashBufferDays * (1 - (arDelayDays / 90))));
-
-    res.json({
-      revenueDropPct,
-      cogsSurgePct,
-      arDelayDays,
-      stressedMonthlyBurn,
-      stressedRunwayMonths,
-      stressedCashBufferDays,
-      runwayDelta: stressedRunwayMonths - baseRunway,
-      burnDeltaPct: Math.round(((stressedMonthlyBurn - baseBurn) / baseBurn) * 100),
-      aiAssessment: `Under a ${revenueDropPct}% seasonal revenue dip combined with a ${cogsSurgePct}% COGS inflation and a ${arDelayDays}-day AR delay, cash runway reduces from ${baseRunway} to ${stressedRunwayMonths} months. Activating a ₹35 Lakhs working capital facility restores runway back to 13+ months.`,
-    });
-  });
-
-  // Vite middleware in dev or static files in production
+  // Server Setup (Vite in Dev / Static in Production)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -291,7 +526,7 @@ Small Business Advisory Group`;
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Small Business Banking Advisory Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Advisory AI Platform running on http://0.0.0.0:${PORT}`);
   });
 }
 
